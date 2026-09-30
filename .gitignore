@@ -1,0 +1,27 @@
+# Ignore Python virtual environment and cache
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Ignore secret environment files
+.env
+.env.local
+backend/.env
+frontend/.env.local
+
+# Ignore local databases and uploaded files
+data/uploads/*
+!data/uploads/.gitkeep
+data/chroma/
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Ignore heavy downloaded AI models
+models/
+
+# Ignore Next.js heavy folders
+frontend/node_modules/
+frontend/.next/
+frontend/out/
