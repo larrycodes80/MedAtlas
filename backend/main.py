@@ -53,11 +53,18 @@ class ProposeBody(BaseModel):
     document_id: str = Field(min_length=1, max_length=100)
 
 
-def _audit(db, action, target_type, target_id, details):
+def _audit(db, user_id, action, target_type, target_id, details):
     db.execute(
-        "INSERT INTO audit_logs (action, target_type, target_id, details) VALUES (?, ?, ?, ?)",
-        (action, target_type, target_id, details),
+        "INSERT INTO audit_logs (user_id, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?)",
+        (user_id, action, target_type, target_id, details),
     )
+
+
+def _user_id(request):
+    profile = current_profile(request)
+    if not profile:
+        raise HTTPException(401, "Log in to access your medical data.")
+    return profile["userId"]
 
 
 @app.on_event("startup")
@@ -103,7 +110,8 @@ async def health_check():
 
 
 @app.post("/api/ingest/pdf")
-async def upload_pdf(file: UploadFile = File(...), force_ocr: bool = False):
+async def upload_pdf(request: Request, file: UploadFile = File(...), force_ocr: bool = False):
+    user_id = _user_id(request)
     filename = (file.filename or "").replace("\\", "/").split("/")[-1]
     if not filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are supported.")
@@ -111,7 +119,7 @@ async def upload_pdf(file: UploadFile = File(...), force_ocr: bool = False):
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(413, "Use a PDF smaller than 10 MB.")
     try:
-        return {"status": "ok", "ingested": ingest_pdf_file(filename[:160], content, force_ocr)}
+        return {"status": "ok", "ingested": ingest_pdf_file(filename[:160], content, force_ocr, user_id)}
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     except RuntimeError as error:
@@ -119,9 +127,10 @@ async def upload_pdf(file: UploadFile = File(...), force_ocr: bool = False):
 
 
 @app.post("/api/ingest/conversation")
-def upload_conversation(body: ConversationBody):
+def upload_conversation(request: Request, body: ConversationBody):
+    user_id = _user_id(request)
     try:
-        return {"status": "ok", "ingested": ingest_conversation(body.title, body.text)}
+        return {"status": "ok", "ingested": ingest_conversation(body.title, body.text, user_id)}
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     except RuntimeError as error:
@@ -129,51 +138,60 @@ def upload_conversation(body: ConversationBody):
 
 
 @app.get("/api/sources")
-def list_sources():
+def list_sources(request: Request):
+    user_id = _user_id(request)
     with get_connection() as db:
         rows = db.execute(
             "SELECT d.id, d.filename, d.source_type, d.medical_category, d.page_count, d.created_at, COUNT(c.id) AS chunk_count "
             "FROM documents d LEFT JOIN chunks c ON d.id = c.document_id "
-            "GROUP BY d.id ORDER BY d.created_at DESC"
+            "WHERE d.user_id=? GROUP BY d.id ORDER BY d.created_at DESC",
+            (user_id,),
         ).fetchall()
     return {"sources": [dict(row) for row in rows]}
 
 
 @app.get("/api/search")
-def search_chunks(q: str = "", limit: int = Query(10, ge=1, le=20)):
+def search_chunks(request: Request, q: str = "", limit: int = Query(10, ge=1, le=20)):
+    user_id = _user_id(request)
     try:
         with get_connection() as db:
-            return {"results": search(q, db, limit)}
+            return {"results": search(q, db, limit, user_id)}
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 
 
 @app.post("/api/admin/rebuild-index")
-def rebuild_index():
+def rebuild_index(request: Request):
+    user_id = _user_id(request)
     with get_connection() as db:
         rows = db.execute(
             "SELECT c.id, c.text_content FROM chunks c JOIN documents d ON d.id = c.document_id "
-            "WHERE d.medical_category IS NOT NULL ORDER BY c.id"
+            "WHERE d.medical_category IS NOT NULL ORDER BY c.id",
         ).fetchall()
         count = rebuild(rows)
-        _audit(db, "REBUILD_FAISS", "index", "all", f"Indexed {count} chunks")
+        _audit(db, user_id, "REBUILD_FAISS", "index", "all", f"Indexed {count} chunks")
         db.commit()
     return {"status": "ok", "indexed_chunks": count}
 
 
 @app.post("/api/admin/rechunk")
-def rechunk():
-    count = rechunk_all()
+def rechunk(request: Request):
+    user_id = _user_id(request)
+    count = rechunk_all(user_id)
     with get_connection() as db:
-        _audit(db, "RECHUNK", "index", "all", f"Created {count} semantic chunks")
+        db.execute(
+            "INSERT INTO audit_logs (user_id, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?)",
+            (user_id, "RECHUNK", "index", "all", f"Created {count} semantic chunks"),
+        )
         db.commit()
     return {"status": "ok", "indexed_chunks": count}
 
 
 @app.get("/api/documents/{document_id}/file")
-def document_file(document_id: str):
+def document_file(request: Request, document_id: str):
+    user_id = _user_id(request)
     with get_connection() as db:
-        row = db.execute("SELECT filename, source_type FROM documents WHERE id = ?", (document_id,)).fetchone()
+        row = db.execute("SELECT filename, source_type FROM documents WHERE id = ? AND user_id = ?", (document_id, user_id)).fetchone()
     if not row:
         raise HTTPException(404, "Document not found.")
     path = UPLOAD_DIR / (f"{document_id}_{row['filename']}" if row["source_type"] == "pdf" else f"{document_id}.txt")
@@ -182,7 +200,7 @@ def document_file(document_id: str):
     return FileResponse(path, media_type="application/pdf" if row["source_type"] == "pdf" else "text/plain", filename=row["filename"])
 
 
-def _grounded_answer(query):
+def _grounded_answer(query, user_id=None):
     try:
         if not guard([{"role": "user", "content": query}]):
             raise HTTPException(400, "The request was blocked by the safety model.")
@@ -191,7 +209,7 @@ def _grounded_answer(query):
 
     try:
         with get_connection() as db:
-            sources = search(query, db, 10)
+            sources = search(query, db, 10, user_id)
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
     abstain = {"answer": "I could not verify an answer in the uploaded sources.", "citations": [], "abstained": True}
@@ -249,15 +267,17 @@ def _grounded_answer(query):
 
 
 @app.post("/api/chat")
-def chat(body: QueryBody):
-    return _grounded_answer(body.query.strip())
+def chat(request: Request, body: QueryBody):
+    return _grounded_answer(body.query.strip(), _user_id(request))
 
 
-def _propose_memories(document_id):
+def _propose_memories(document_id, user_id):
     with get_connection() as db:
         rows = db.execute(
-            "SELECT id, page_number, text_content FROM chunks WHERE document_id = ? ORDER BY page_number, chunk_index LIMIT 40",
-            (document_id,),
+            "SELECT c.id, c.page_number, c.text_content FROM chunks c "
+            "JOIN documents d ON d.id=c.document_id "
+            "WHERE c.document_id = ? AND d.user_id = ? ORDER BY c.page_number, c.chunk_index LIMIT 40",
+            (document_id, user_id),
         ).fetchall()
     if not rows:
         raise HTTPException(404, "Document not found or has no text chunks.")
@@ -299,60 +319,78 @@ def _propose_memories(document_id):
                 (memory_id, category, fact.strip(), document_id, by_id[source_id]["page_number"], quote),
             )
             created.append({"id": memory_id, "category": category, "fact_text": fact.strip(), "source_page": by_id[source_id]["page_number"], "source_quote": quote, "status": "pending"})
-        _audit(db, "PROPOSE_MEMORIES", "document", document_id, f"Proposed {len(created)} memories")
+        db.execute(
+            "INSERT INTO audit_logs (user_id, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?)",
+            (user_id, "PROPOSE_MEMORIES", "document", document_id, f"Proposed {len(created)} memories"),
+        )
         db.commit()
     return {"memories": created}
 
 
 @app.post("/api/memories/propose")
-def propose_memories(body: ProposeBody):
-    return _propose_memories(body.document_id)
+def propose_memories(request: Request, body: ProposeBody):
+    return _propose_memories(body.document_id, _user_id(request))
 
 
 @app.post("/api/documents/{document_id}/propose")
-def propose_document_memories(document_id: str):
-    return _propose_memories(document_id)
+def propose_document_memories(request: Request, document_id: str):
+    return _propose_memories(document_id, _user_id(request))
 
 
 @app.get("/api/memories")
-def list_memories(status: Literal["pending", "approved", "rejected"] | None = None):
-    query = "SELECT * FROM memories"
+def list_memories(request: Request, status: Literal["pending", "approved", "rejected"] | None = None):
+    user_id = _user_id(request)
+    query = "SELECT m.* FROM memories m JOIN documents d ON d.id=m.source_document_id WHERE d.user_id=?"
+    params = [user_id]
     if status:
-        query += " WHERE status = ?"
+        query += " AND m.status = ?"
+        params.append(status)
     with get_connection() as db:
-        rows = db.execute(query + " ORDER BY updated_at DESC, created_at DESC", (status,) if status else ()).fetchall()
+        rows = db.execute(query + " ORDER BY m.updated_at DESC, m.created_at DESC", params).fetchall()
     return {"memories": [dict(row) for row in rows]}
 
 
-def _decide_memory(memory_id, status):
+def _decide_memory(memory_id, status, user_id):
     with get_connection() as db:
-        if not db.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone():
+        if not db.execute(
+            "SELECT 1 FROM memories m JOIN documents d ON d.id=m.source_document_id WHERE m.id = ? AND d.user_id = ?",
+            (memory_id, user_id),
+        ).fetchone():
             raise HTTPException(404, "Memory not found.")
         db.execute("UPDATE memories SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (status, memory_id))
-        _audit(db, f"MEMORY_{status.upper()}", "memory", memory_id, f"Memory marked {status}")
+        db.execute(
+            "INSERT INTO audit_logs (user_id, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?)",
+            (user_id, f"MEMORY_{status.upper()}", "memory", memory_id, f"Memory marked {status}"),
+        )
         db.commit()
     return {"id": memory_id, "status": status}
 
 
 @app.post("/api/memories/{memory_id}/decision")
-def decide_memory(memory_id: str, body: DecisionBody):
-    return _decide_memory(memory_id, body.status)
+def decide_memory(request: Request, memory_id: str, body: DecisionBody):
+    return _decide_memory(memory_id, body.status, _user_id(request))
 
 
 @app.post("/api/memories/{memory_id}/approve")
-def approve_memory(memory_id: str):
-    return _decide_memory(memory_id, "approved")
+def approve_memory(request: Request, memory_id: str):
+    return _decide_memory(memory_id, "approved", _user_id(request))
 
 
 @app.post("/api/memories/{memory_id}/reject")
-def reject_memory(memory_id: str):
-    return _decide_memory(memory_id, "rejected")
+def reject_memory(request: Request, memory_id: str):
+    return _decide_memory(memory_id, "rejected", _user_id(request))
 
 
 @app.get("/api/concepts")
-def concepts():
+def concepts(request: Request):
+    user_id = _user_id(request)
     with get_connection() as db:
-        rows = db.execute("SELECT category, fact_text, source_document_id, source_page, source_quote FROM memories WHERE status = 'approved' ORDER BY category, updated_at DESC").fetchall()
+        rows = db.execute(
+            "SELECT m.category, m.fact_text, m.source_document_id, m.source_page, m.source_quote "
+            "FROM memories m JOIN documents d ON d.id=m.source_document_id "
+            "WHERE m.status='approved' AND d.user_id=? ORDER BY m.category, m.updated_at DESC",
+            (user_id,),
+        ).fetchall()
     grouped = {}
     for row in rows:
         grouped.setdefault(row["category"], []).append(dict(row))
@@ -360,7 +398,8 @@ def concepts():
 
 
 @app.get("/api/audit")
-def audit(limit: int = Query(100, ge=1, le=500)):
+def audit(request: Request, limit: int = Query(100, ge=1, le=500)):
+    user_id = _user_id(request)
     with get_connection() as db:
-        rows = db.execute("SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        rows = db.execute("SELECT * FROM audit_logs WHERE user_id=? ORDER BY id DESC LIMIT ?", (user_id, limit)).fetchall()
     return {"events": [dict(row) for row in rows]}

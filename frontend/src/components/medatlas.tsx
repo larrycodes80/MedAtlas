@@ -1,11 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, Asterisk, ChartNoAxesCombined, FileText, Heart, LogOut, Pause, Play, Plus, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUpRight, Asterisk, ChartNoAxesCombined, FileText, Heart, LogOut, Pause, Play, Plus, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
-type Profile = { name: string; dateOfBirth: string; mobile: string };
+type Profile = { userId: string; name: string; dateOfBirth: string };
 async function auth<T>(path: string, body?: object): Promise<T> {
   const response = await fetch(`/api/auth/${path}`, { method: body ? "POST" : "GET", headers: body ? { "Content-Type": "application/json" } : undefined, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
   const result = await response.json();
@@ -15,52 +14,33 @@ async function auth<T>(path: string, body?: object): Promise<T> {
 
 type Panel = "documents" | "trends" | "insurance" | null;
 type LocalDocument = { id: string; name: string; size: number };
-const emptyProfile: Profile = { name: "", dateOfBirth: "", mobile: "" };
+const emptyProfile = { name: "", dateOfBirth: "", password: "" };
 
 function Brand({ small = false }: { small?: boolean }) {
   return <span className={`brand ${small ? "brand-small" : ""}`}>MedAtlas<span className="brand-dot">✳</span></span>;
 }
 
 function Login({ open, onClose, onSuccess }: { open: boolean; onClose: () => void; onSuccess: (profile: Profile) => void }) {
-  const [step, setStep] = useState<"profile" | "code">("profile");
-  const [profile, setProfile] = useState<Profile>(emptyProfile);
-  const [code, setCode] = useState("");
+  const [mode, setMode] = useState<"login" | "create">("login");
+  const [profile, setProfile] = useState(emptyProfile);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [enrolled, setEnrolled] = useState(true);
-  const [qr, setQr] = useState("");
-  const [manualKey, setManualKey] = useState("");
   const localToday = new Date();
   const today = `${localToday.getFullYear()}-${String(localToday.getMonth() + 1).padStart(2, "0")}-${String(localToday.getDate()).padStart(2, "0")}`;
 
   useEffect(() => {
-    if (!open) { setStep("profile"); setProfile(emptyProfile); setCode(""); setError(""); setQr(""); setManualKey(""); }
-    else auth<{ enrolled: boolean }>("status").then(state => setEnrolled(state.enrolled)).catch(() => setError("Cannot reach the authentication service."));
+    if (!open) { setMode("login"); setProfile(emptyProfile); setError(""); }
   }, [open]);
 
-  async function continueLogin(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const fields = new FormData(event.currentTarget);
-    const cleaned = { name: String(fields.get("name") ?? "").trim(), dateOfBirth: String(fields.get("dateOfBirth") ?? ""), mobile: String(fields.get("mobile") ?? "").trim() };
-    if (!cleaned.name || !cleaned.mobile || !cleaned.dateOfBirth || cleaned.dateOfBirth > today || cleaned.dateOfBirth < "1900-01-01") {
-      setError("Please enter your name, mobile number, and a valid date of birth."); return;
-    }
+    const cleaned = { name: String(fields.get("name") ?? "").trim(), dateOfBirth: String(fields.get("dateOfBirth") ?? ""), password: String(fields.get("password") ?? "") };
+    if (!cleaned.name || !cleaned.dateOfBirth || cleaned.dateOfBirth > today || cleaned.dateOfBirth < "1900-01-01" || cleaned.password.length < 8) { setError("Enter your name, valid date of birth, and an 8-character password."); return; }
     setBusy(true); setError("");
     try {
-      if (!enrolled) {
-        const setup = await auth<{ qr: string; manualKey: string }>("enroll", cleaned);
-        setQr(setup.qr); setManualKey(setup.manualKey);
-      }
-      setProfile(cleaned); setCode(""); setStep("code");
-    }
-    catch (err) { setError(err instanceof Error ? err.message : "Please try again."); }
-    finally { setBusy(false); }
-  }
-  async function verify(event: FormEvent) {
-    event.preventDefault(); setError(""); setBusy(true);
-    try {
-      const result = await auth<{ profile: Profile }>(enrolled ? "login" : "activate", enrolled ? { ...profile, code } : { code });
-      setQr(""); setManualKey(""); onSuccess(result.profile);
+      const result = await auth<{ profile: Profile }>(mode === "create" ? "create" : "login", cleaned);
+      onSuccess(result.profile);
     }
     catch (err) { setError(err instanceof Error ? err.message : "Please try again."); }
     finally { setBusy(false); }
@@ -71,25 +51,20 @@ function Login({ open, onClose, onSuccess }: { open: boolean; onClose: () => voi
       <div className="auth-art" aria-hidden="true"><span className="auth-script">Hello,<br/>you.</span><Asterisk className="auth-star" strokeWidth={1.4}/><span className="auth-caption">A LITTLE CLARITY.<br/>A LOT MORE YOU.</span></div>
       <div className="auth-main">
         <span className="eyebrow">YOUR PERSONAL HEALTH SPACE</span>
-        <DialogTitle className="auth-title">{step === "profile" ? "Let's make it personal." : "One code. You're in."}</DialogTitle>
-        <DialogDescription className="auth-description">{step === "profile" ? "Your health story starts with you." : enrolled ? <>Enter the code from your authenticator app for <strong>{profile.name}</strong>.</> : "Scan this QR code once with your authenticator app, then enter its current code."}</DialogDescription>
-        {step === "profile" ? <form onSubmit={continueLogin} className="auth-form">
+        <DialogTitle className="auth-title">{mode === "login" ? "Welcome back." : "Create your account."}</DialogTitle>
+        <DialogDescription className="auth-description">{mode === "login" ? "Enter your account details to open your private health space." : "Your name, date of birth, and password create a separate local account."}</DialogDescription>
+        <div className="auth-mode" role="tablist" aria-label="Authentication mode">
+          <button type="button" role="tab" aria-selected={mode === "login"} className={mode === "login" ? "is-active" : ""} onClick={() => { setMode("login"); setError(""); }}>Log in</button>
+          <button type="button" role="tab" aria-selected={mode === "create"} className={mode === "create" ? "is-active" : ""} onClick={() => { setMode("create"); setError(""); }}>Create your account</button>
+        </div>
+        <form onSubmit={submit} className="auth-form">
           <label htmlFor="full-name">Your name<input id="full-name" name="name" autoComplete="name" placeholder="What should we call you?" maxLength={80} defaultValue={profile.name} required /></label>
           <label htmlFor="birth-date">Date of birth<input id="birth-date" name="dateOfBirth" autoComplete="bday" type="date" min="1900-01-01" max={today} defaultValue={profile.dateOfBirth} required /></label>
-          <label htmlFor="mobile">Mobile number<input id="mobile" name="mobile" type="tel" autoComplete="tel" placeholder="Your mobile number" maxLength={20} defaultValue={profile.mobile} required /></label>
+          <label htmlFor="account-password">Password<input id="account-password" name="password" autoComplete={mode === "login" ? "current-password" : "new-password"} type="password" minLength={8} maxLength={128} placeholder="At least 8 characters" required /></label>
           {error && <p role="alert" className="form-error">{error}</p>}
-          <button className="button button-dark auth-submit" disabled={busy} type="submit">{busy ? "Preparing…" : enrolled ? "Continue" : "Set up authenticator"}<ArrowRight size={19}/></button>
-          <p className="demo-notice"><Sparkles size={15}/><span>Your authenticator generates codes offline. Your mobile number is an account detail; no SMS is sent.</span></p>
-        </form> : <form className="auth-form code-form" onSubmit={verify}>
-          {!enrolled && qr && <div className="enrollment-qr"><img src={qr} alt="Scan with an authenticator app" width={170} height={170}/><small>Can't scan? Enter this key manually: <strong>{manualKey}</strong></small></div>}
-          <label htmlFor="verification-code">Your 6-digit code</label>
-          <InputOTP id="verification-code" aria-label="Your 6-digit code" inputMode="numeric" autoComplete="one-time-code" pattern="^[0-9]*$" maxLength={6} value={code} onChange={value => { setCode(value); setError(""); }}>
-            <InputOTPGroup className="otp-group">{[0,1,2,3,4,5].map(i => <InputOTPSlot key={i} index={i} className="otp-slot"/>)}</InputOTPGroup>
-          </InputOTP>
-          {error && <p role="alert" className="form-error">{error}</p>}
-          <button type="submit" className="button button-dark auth-submit" disabled={busy || code.length !== 6}>{busy ? "Verifying…" : "Open my MedAtlas"}<ArrowRight size={19}/></button>
-          <div className="code-actions"><button type="button" onClick={() => { setStep("profile"); setError(""); setCode(""); }}><ArrowLeft size={15}/>Edit details</button></div>
-        </form>}
+          <button className="button button-dark auth-submit" disabled={busy} type="submit">{busy ? "Opening…" : mode === "login" ? "Log in" : "Create account"}<ArrowRight size={19}/></button>
+          <p className="demo-notice"><Sparkles size={15}/><span>Accounts and medical data stay on this device.</span></p>
+        </form>
       </div>
     </DialogContent>
   </Dialog>;
@@ -125,6 +100,10 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
   const inputRef = useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState<{ answer: string; citations: { filename: string; page_number: number }[]; abstained: boolean } | null>(null);
+  const [questionError, setQuestionError] = useState("");
+  const [asking, setAsking] = useState(false);
   const titles = { documents: "Your documents", trends: "Your health trends", insurance: "Your insurance claim" };
   function addFiles(files: FileList | null) {
     if (!files) return;
@@ -139,6 +118,19 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
     setFileError(invalid ? "Choose PDF, JPG, or PNG files under 20 MB each." : "");
     if (inputRef.current) inputRef.current.value = "";
   }
+  async function askQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const query = question.trim();
+    if (!query || asking) return;
+    setAsking(true); setQuestionError(""); setAnswer(null);
+    try {
+      const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ query }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "The local health pipeline could not answer.");
+      setAnswer(result);
+    } catch (error) { setQuestionError(error instanceof Error ? error.message : "The local health pipeline could not answer."); }
+    finally { setAsking(false); }
+  }
   return <Sheet open={panel !== null} onOpenChange={value => { if (!value) { setFileError(""); onClose(); } }}>
     <SheetContent className="feature-sheet">
       <SheetHeader><span className="eyebrow">YOUR MEDATLAS</span><SheetTitle className="panel-title">{panel ? titles[panel] : "Your health space"}</SheetTitle><SheetDescription className="panel-description">{panel === "documents" ? "One place for the pieces of your health story." : panel === "trends" ? "A clearer picture of your health over time." : "A little less paperwork. A little more peace of mind."}</SheetDescription></SheetHeader>
@@ -149,10 +141,13 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
         {fileError && <p className="form-error" role="alert">{fileError}</p>}
         <p className="panel-note">This preview keeps selected filenames on this page. Use the local medical workspace to ingest and search medical documents.</p>
         {documents.length > 0 && <><div className="file-list-heading">SELECTED DOCUMENTS <span>{documents.length}</span></div><ul className="file-list">{documents.map(doc => <li key={doc.id}><FileText size={23}/><span><strong>{doc.name}</strong><small>{doc.size < 1024 * 1024 ? `${Math.max(1, Math.round(doc.size / 1024))} KB` : `${(doc.size / (1024 * 1024)).toFixed(1)} MB`} · Selected locally</small></span><button aria-label={`Remove ${doc.name}`} onClick={() => setDocuments(documents.filter(d => d.id !== doc.id))}><X size={18}/></button></li>)}</ul></>}
-      </div> : <div className="panel-body"><div className={`empty-panel ${panel === "trends" ? "empty-trends" : "empty-insurance"}`}>
-        {panel === "trends" ? <ChartNoAxesCombined size={57} strokeWidth={1.3}/> : <ShieldCheck size={57} strokeWidth={1.3}/>}
-        <h3>{panel === "trends" ? "Your bigger picture starts here." : "A clearer path to your claim."}</h3><p>{panel === "trends" ? "Your health measurements and their changes over time will appear here." : "Your policy documents, claim details, and progress will come together here."}</p><span className="preview-label">FRONTEND PREVIEW</span>
-      </div><p className="panel-note">{panel === "trends" ? "Health analysis will be connected in the next build. No medical results have been generated." : "Claim management will be connected in the next build. No claim has been submitted."}</p></div>}
+      </div> : <div className="panel-body">{panel === "trends" ? <>
+        <div className="empty-panel empty-trends"><ChartNoAxesCombined size={57} strokeWidth={1.3}/><h3>Ask about your health.</h3><p>Answers are grounded in your accepted medical documents and checked by the local safety pipeline.</p></div>
+        <form className="question-form" onSubmit={askQuestion}><label htmlFor="health-question">Your question</label><div className="question-row"><input id="health-question" className="question-input" value={question} onChange={event => setQuestion(event.target.value)} maxLength={1000} placeholder="What does my latest report say?"/><button className="button button-dark" type="submit" disabled={asking || !question.trim()}>{asking ? "Checking…" : "Ask"}</button></div></form>
+        {questionError && <p className="form-error" role="alert">{questionError}</p>}
+        {answer && <div className={`question-answer ${answer.abstained ? "is-abstained" : ""}`}><strong>{answer.abstained ? "I could not verify that from your sources." : "Verified from your sources"}</strong><p>{answer.answer}</p>{answer.citations?.length > 0 && <ul className="citation-list">{answer.citations.map((citation, index) => <li key={`${citation.filename}-${citation.page_number}-${index}`}>[{index + 1}] {citation.filename} · page {citation.page_number}</li>)}</ul>}</div>}
+        <p className="panel-note">Questions are sent only to the local MedAtlas backend. Diagnosis, treatment, and unsupported answers are blocked or declined.</p>
+      </> : <><div className="empty-panel empty-insurance"><ShieldCheck size={57} strokeWidth={1.3}/><h3>A clearer path to your claim.</h3><p>Your policy documents, claim details, and progress will come together here.</p><span className="preview-label">FRONTEND PREVIEW</span></div><p className="panel-note">Claim management will be connected in the next build. No claim has been submitted.</p></>}</div>}
     </SheetContent>
   </Sheet>;
 }

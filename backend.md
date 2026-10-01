@@ -2,7 +2,7 @@
 
 MedAtlas runs locally at `http://127.0.0.1:8765` for the integrated frontend. SQLite stores source text, semantic chunks, proposed memories, and audit events. The FAISS vector index is rebuilt from SQLite. SQLite FTS5 supplies BM25 keyword ranking. A local cross-encoder reranks the combined candidates.
 
-The local vault requires authenticator login. `backend/auth.py` stores one owner profile (name, birth date, mobile) and an encrypted TOTP secret in SQLite. Its separate encryption key is created in ignored `data/totp.key`; preserve both the database and key during backup or migration. Enrollment confirms a real six-digit code before activating the owner. Fresh codes cannot be reused; five failed logins lock the account for five minutes. Sessions last twelve hours and use HttpOnly, SameSite cookies. All medical, search, upload, file, memory, audit, and admin routes require a valid session. `GET /api/health` and the authenticator endpoints remain available before login. Mobile numbers are not verified by SMS. Keep a backed-up authenticator entry: there is no self-service reset based on personal details.
+The local vault uses separate password accounts. `backend/auth.py` stores each name and birth date with a unique `usr_...` ID and an scrypt password hash. Sessions last twelve hours and use HttpOnly, SameSite cookies. All medical, search, upload, file, memory, audit, and admin routes require a valid session. `GET /api/health` and the account endpoints remain available before login. Documents and audit events are linked to the signed-in user, so accounts cannot read one another's data.
 
 ## Answer pipeline
 
@@ -75,6 +75,7 @@ On an existing database, migrate old fixed-size chunks and build FAISS through t
 ## API
 
 - `GET /api/health`: SQLite, FAISS, BGE, reranker, and Ollama status.
+- `GET /api/auth/status`, `POST /api/auth/create`, `POST /api/auth/login`, `POST /api/auth/logout`: local password-account session flow.
 - `POST /api/ingest/pdf?force_ocr=false`: PDF text or OCR, medical classification, semantic chunks, BM25, and FAISS.
 - `POST /api/ingest/conversation`: `{ "title": "...", "text": "..." }`; same medical gate for pasted text.
 - `GET /api/sources`: ingested documents, medical categories, and chunk counts.

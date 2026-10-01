@@ -49,7 +49,7 @@ def rebuild(rows):
     return len(rows)
 
 
-def index_document(doc_id, rows):
+def index_document(doc_id, rows, user_id=None):
     # ponytail: full rebuild per ingest is simple for a laptop corpus; use incremental FAISS IDs if it gets large.
     with get_connection() as db:
         all_rows = db.execute(
@@ -83,7 +83,7 @@ def _vector_results(query, limit):
     return [(ids[position], float(score)) for score, position in zip(scores[0], positions[0]) if position >= 0], len(ids)
 
 
-def search(query, db, limit=10):
+def search(query, db, limit=10, user_id=None):
     query = query.strip()
     if not query:
         return []
@@ -118,8 +118,9 @@ def search(query, db, limit=10):
                    c.page_number, c.text_content, c.quote_snippet
             FROM chunks c JOIN documents d ON d.id = c.document_id
             WHERE c.id = ? AND d.medical_category IS NOT NULL
+              AND (? IS NULL OR d.user_id = ?)
             """,
-            (chunk_id,),
+            (chunk_id, user_id, user_id),
         ).fetchone()
         if row:
             results.append({**dict(row), **candidates[chunk_id]})

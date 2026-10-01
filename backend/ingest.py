@@ -138,7 +138,7 @@ def _replace_document(doc_id, filename, source_type, pages, medical_category, us
             )
             total_chunks += _store_chunks(conn, doc_id, page_number, text)
         conn.execute(
-            "INSERT INTO audit_logs (action, target_type, target_id, details) VALUES (?, ?, ?, ?)",
+            "INSERT INTO audit_logs (user_id, action, target_type, target_id, details) VALUES (?, ?, ?, ?, ?)",
             (user_id, "INGEST", "document", doc_id, f"Ingested {filename} ({source_type})"),
         )
         conn.commit()
@@ -167,7 +167,7 @@ def _replace_document(doc_id, filename, source_type, pages, medical_category, us
 
 def ingest_pdf_file(filename: str, file_bytes: bytes, force_ocr=False, user_id=None):
     safe_name = Path(filename).name
-    doc_id = f"doc_{hashlib.sha1((str(user_id) + ":" ).encode() + file_bytes).hexdigest()[:10]}"
+    doc_id = f"doc_{hashlib.sha1((str(user_id) + ':').encode() + file_bytes).hexdigest()[:10]}"
     pages = []
     with pymupdf.open(stream=file_bytes, filetype="pdf") as pdf:
         if pdf.is_encrypted and not pdf.authenticate(""):
@@ -198,20 +198,34 @@ def ingest_conversation(title: str, text: str, user_id=None):
 
 def rechunk_all(user_id=None):
     with get_connection() as conn:
-        pages = conn.execute(
-            "SELECT p.document_id, p.page_number, p.text_content FROM pages p "
-            "JOIN documents d ON d.id = p.document_id WHERE d.medical_category IS NOT NULL "
-            + ("AND d.user_id = ? " if user_id else "")
-            "ORDER BY p.document_id, p.page_number"
-        ).fetchall() if not user_id else db.execute(
-            "SELECT p.document_id, p.page_number, p.text_content FROM pages p "
-            "JOIN documents d ON d.id = p.document_id WHERE d.medical_category IS NOT NULL AND d.user_id = ? "
-            "ORDER BY p.document_id, p.page_number", (user_id,)
-        ).fetchall()
-        conn.execute("DELETE FROM chunks_fts")
-        conn.execute("DELETE FROM chunks")
+        if user_id:
+            pages = conn.execute(
+                "SELECT p.document_id, p.page_number, p.text_content FROM pages p "
+                "JOIN documents d ON d.id = p.document_id "
+                "WHERE d.medical_category IS NOT NULL AND d.user_id = ? "
+                "ORDER BY p.document_id, p.page_number",
+                (user_id,),
+            ).fetchall()
+            document_ids = [row["document_id"] for row in pages]
+        else:
+            pages = conn.execute(
+                "SELECT p.document_id, p.page_number, p.text_content FROM pages p "
+                "JOIN documents d ON d.id = p.document_id "
+                "WHERE d.medical_category IS NOT NULL ORDER BY p.document_id, p.page_number"
+            ).fetchall()
+            document_ids = None
+        if user_id is not None and document_ids:
+            marks = ",".join("?" for _ in document_ids)
+            conn.execute(f"DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id IN ({marks}))", document_ids)
+            conn.execute(f"DELETE FROM chunks WHERE document_id IN ({marks})", document_ids)
+        elif user_id is None:
+            conn.execute("DELETE FROM chunks_fts")
+            conn.execute("DELETE FROM chunks")
         count = sum(_store_chunks(conn, row["document_id"], row["page_number"], row["text_content"]) for row in pages)
-        rows = conn.execute("SELECT id, text_content FROM chunks ORDER BY id").fetchall()
+        rows = conn.execute(
+            "SELECT c.id, c.text_content FROM chunks c JOIN documents d ON d.id=c.document_id "
+            "WHERE d.medical_category IS NOT NULL ORDER BY c.id",
+        ).fetchall()
         conn.commit()
     rebuild(rows)
     return count
