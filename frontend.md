@@ -1,6 +1,6 @@
 # MedAtlas local frontend
 
-The local Next.js app at `http://127.0.0.1:3002` uses the supplied MedAtlas visual design. The landing page has a translucent anatomical brain and light sparks. The dashboard has a quiet anatomical heart and heartbeat animation, a light grain texture, scroll reveal, and three larger pastel cards. The original panels and copy remain. The document panel links to `/workspace`, which contains the existing medical upload, search, chat, memory review, and audit tools.
+The local Next.js app at `http://127.0.0.1:3002` uses the supplied MedAtlas visual design. The landing page has a translucent anatomical brain and light sparks. The dashboard has a quiet anatomical heart and heartbeat animation, a light grain texture, scroll reveal, and three larger pastel cards. The document panel has one offline upload control that starts the complete medical ingestion pipeline.
 
 The login dialog has two options: `Log in` and `Create your account`. Both use name, date of birth, and an eight-character password. The backend creates a unique `usr_...` ID, stores an scrypt password hash, and issues a local HttpOnly session cookie. `/workspace` and every medical API endpoint require that session. Each document is linked to the signed-in user and is filtered from other accounts. The Health Trends panel includes a local question bar that calls the guarded, evidence-grounded `/api/chat` pipeline and shows citations or an abstention.
 

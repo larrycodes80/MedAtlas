@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowDown, ArrowRight, ArrowUpRight, Asterisk, ChartNoAxesCombined, FileText, Heart, LogOut, Pause, Play, Plus, ShieldCheck, Sparkles, Upload, X } from "lucide-react";
+import { useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
+import { ArrowDown, ArrowRight, ArrowUpRight, Asterisk, ChartNoAxesCombined, FileText, Heart, LogOut, Pause, Play, Plus, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 type Profile = { userId: string; name: string; dateOfBirth: string };
@@ -13,7 +13,7 @@ async function auth<T>(path: string, body?: object): Promise<T> {
 }
 
 type Panel = "documents" | "trends" | "insurance" | null;
-type LocalDocument = { id: string; name: string; size: number };
+type LocalDocument = { id: string; name: string; size: number; status: "processing" | "ready" | "rejected"; detail?: string };
 const emptyProfile = { name: "", dateOfBirth: "", password: "" };
 
 function Brand({ small = false }: { small?: boolean }) {
@@ -96,26 +96,46 @@ function Landing({ onLogin }: { onLogin: () => void }) {
   </main>;
 }
 
-function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Panel; onClose: () => void; documents: LocalDocument[]; setDocuments: (docs: LocalDocument[]) => void }) {
+function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Panel; onClose: () => void; documents: LocalDocument[]; setDocuments: Dispatch<SetStateAction<LocalDocument[]>> }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [fileError, setFileError] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState<{ answer: string; citations: { filename: string; page_number: number }[]; abstained: boolean } | null>(null);
   const [questionError, setQuestionError] = useState("");
   const [asking, setAsking] = useState(false);
   const titles = { documents: "Your documents", trends: "Your health trends", insurance: "Your insurance claim" };
-  function addFiles(files: FileList | null) {
+  async function addFiles(files: FileList | null) {
     if (!files) return;
     const accepted: LocalDocument[] = [];
+    const validFiles: File[] = [];
     let invalid = false;
     Array.from(files).forEach(file => {
-      if (!/\.(pdf|png|jpe?g)$/i.test(file.name) || file.size > 20 * 1024 * 1024) { invalid = true; return; }
-      // Keep metadata only. No upload, document reading, or cloud storage occurs.
-      accepted.push({ id: crypto.randomUUID(), name: file.name, size: file.size });
+      if (!/\.pdf$/i.test(file.name) || file.size > 10 * 1024 * 1024) { invalid = true; return; }
+      accepted.push({ id: crypto.randomUUID(), name: file.name, size: file.size, status: "processing" });
+      validFiles.push(file);
     });
-    setDocuments([...documents, ...accepted]);
-    setFileError(invalid ? "Choose PDF, JPG, or PNG files under 20 MB each." : "");
+    setFileError(invalid ? "Choose PDF files under 10 MB each." : "");
+    if (!accepted.length) return;
+    setDocuments(previous => [...previous, ...accepted]);
+    setUploading(true);
+    for (const [index, file] of validFiles.entries()) {
+      const item = accepted[index];
+      if (!item) continue;
+      const body = new FormData();
+      body.append("file", file);
+      try {
+        const response = await fetch("/api/ingest/pdf", { method: "POST", body, credentials: "same-origin" });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "Document rejected.");
+        const ingested = result.ingested;
+        setDocuments(previous => previous.map(document => document.id === item.id ? { ...document, status: "ready", detail: `${ingested.medical_category} · ${ingested.chunk_count} chunks` } : document));
+      } catch (error) {
+        setDocuments(previous => previous.map(document => document.id === item.id ? { ...document, status: "rejected", detail: error instanceof Error ? error.message : "Document rejected." } : document));
+      }
+    }
+    setUploading(false);
     if (inputRef.current) inputRef.current.value = "";
   }
   async function askQuestion(event: FormEvent<HTMLFormElement>) {
@@ -135,12 +155,11 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
     <SheetContent className="feature-sheet">
       <SheetHeader><span className="eyebrow">YOUR MEDATLAS</span><SheetTitle className="panel-title">{panel ? titles[panel] : "Your health space"}</SheetTitle><SheetDescription className="panel-description">{panel === "documents" ? "One place for the pieces of your health story." : panel === "trends" ? "A clearer picture of your health over time." : "A little less paperwork. A little more peace of mind."}</SheetDescription></SheetHeader>
       {panel === "documents" ? <div className="panel-body">
-        <a href="/workspace" className="button button-dark workspace-link">Open local medical workspace <ArrowUpRight size={18}/></a>
-        <input ref={inputRef} type="file" accept=".pdf,.jpg,.jpeg,.png" multiple className="sr-only" tabIndex={-1} aria-label="Select medical documents" onChange={e => addFiles(e.target.files)}/>
-        <button className={`upload-zone ${dragging ? "is-dragging" : ""}`} onClick={() => inputRef.current?.click()} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}><span className="upload-icon"><Upload size={27}/></span><strong>Drop your documents here</strong><span>or click to browse your files</span><small>PDF, JPG, PNG · Up to 20 MB each</small></button>
+        <input ref={inputRef} type="file" accept="application/pdf,.pdf" multiple className="sr-only" tabIndex={-1} aria-label="Upload medical documents" onChange={e => void addFiles(e.target.files)}/>
+        <button disabled={uploading} className={`upload-zone ${dragging ? "is-dragging" : ""}`} onClick={() => inputRef.current?.click()} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); void addFiles(e.dataTransfer.files); }}><span className="upload-icon"><Upload size={27}/></span><strong>{uploading ? "Processing offline…" : "Upload your documents"}</strong><span>Click or drop PDF files here</span><small>Medical checks, processing, and storage stay on this device</small></button>
         {fileError && <p className="form-error" role="alert">{fileError}</p>}
-        <p className="panel-note">This preview keeps selected filenames on this page. Use the local medical workspace to ingest and search medical documents.</p>
-        {documents.length > 0 && <><div className="file-list-heading">SELECTED DOCUMENTS <span>{documents.length}</span></div><ul className="file-list">{documents.map(doc => <li key={doc.id}><FileText size={23}/><span><strong>{doc.name}</strong><small>{doc.size < 1024 * 1024 ? `${Math.max(1, Math.round(doc.size / 1024))} KB` : `${(doc.size / (1024 * 1024)).toFixed(1)} MB`} · Selected locally</small></span><button aria-label={`Remove ${doc.name}`} onClick={() => setDocuments(documents.filter(d => d.id !== doc.id))}><X size={18}/></button></li>)}</ul></>}
+        <p className="panel-note">Each upload starts the complete offline medical-document pipeline. Non-medical files are rejected before indexing.</p>
+        {documents.length > 0 && <><div className="file-list-heading">PROCESSING STATUS <span>{documents.length}</span></div><ul className="file-list">{documents.map(doc => <li key={doc.id}><FileText size={23}/><span><strong>{doc.name}</strong><small className={doc.status === "rejected" ? "file-status-rejected" : ""}>{doc.status === "processing" ? "Processing offline…" : doc.status === "ready" ? doc.detail : doc.detail}</small></span></li>)}</ul></>}
       </div> : <div className="panel-body">{panel === "trends" ? <>
         <div className="empty-panel empty-trends"><ChartNoAxesCombined size={57} strokeWidth={1.3}/><h3>Ask about your health.</h3><p>Answers are grounded in your accepted medical documents and checked by the local safety pipeline.</p></div>
         <form className="question-form" onSubmit={askQuestion}><label htmlFor="health-question">Your question</label><div className="question-row"><input id="health-question" className="question-input" value={question} onChange={event => setQuestion(event.target.value)} maxLength={1000} placeholder="What does my latest report say?"/><button className="button button-dark" type="submit" disabled={asking || !question.trim()}>{asking ? "Checking…" : "Ask"}</button></div></form>
