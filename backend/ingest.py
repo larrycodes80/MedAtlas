@@ -119,15 +119,15 @@ def _page_text(page, force_ocr=False):
     return text, True
 
 
-def _replace_document(doc_id, filename, source_type, pages, medical_category):
+def _replace_document(doc_id, filename, source_type, pages, medical_category, user_id=None):
     conn = get_connection()
     try:
         conn.execute("DELETE FROM chunks_fts WHERE chunk_id LIKE ?", (f"{doc_id}_%",))
         conn.execute("DELETE FROM memories WHERE source_document_id = ?", (doc_id,))
         conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
         conn.execute(
-            "INSERT INTO documents (id, filename, source_type, medical_category, page_count) VALUES (?, ?, ?, ?, ?)",
-            (doc_id, filename, source_type, medical_category, len(pages)),
+            "INSERT INTO documents (id, user_id, filename, source_type, medical_category, page_count) VALUES (?, ?, ?, ?, ?, ?)",
+            (doc_id, user_id, filename, source_type, medical_category, len(pages)),
         )
         total_chunks = 0
         for page_number, text, used_ocr in pages:
@@ -139,7 +139,7 @@ def _replace_document(doc_id, filename, source_type, pages, medical_category):
             total_chunks += _store_chunks(conn, doc_id, page_number, text)
         conn.execute(
             "INSERT INTO audit_logs (action, target_type, target_id, details) VALUES (?, ?, ?, ?)",
-            ("INGEST", "document", doc_id, f"Ingested {filename} ({source_type})"),
+            (user_id, "INGEST", "document", doc_id, f"Ingested {filename} ({source_type})"),
         )
         conn.commit()
         rows = conn.execute(
@@ -151,7 +151,7 @@ def _replace_document(doc_id, filename, source_type, pages, medical_category):
 
     indexed = False
     try:
-        indexed = index_document(doc_id, rows) == total_chunks
+        indexed = index_document(doc_id, rows, user_id) == total_chunks
     except Exception:
         # SQLite remains authoritative; /api/admin/rebuild-index repairs the optional index.
         pass
@@ -165,9 +165,9 @@ def _replace_document(doc_id, filename, source_type, pages, medical_category):
     }
 
 
-def ingest_pdf_file(filename: str, file_bytes: bytes, force_ocr=False):
+def ingest_pdf_file(filename: str, file_bytes: bytes, force_ocr=False, user_id=None):
     safe_name = Path(filename).name
-    doc_id = f"doc_{hashlib.sha1(file_bytes).hexdigest()[:10]}"
+    doc_id = f"doc_{hashlib.sha1((str(user_id) + ":" ).encode() + file_bytes).hexdigest()[:10]}"
     pages = []
     with pymupdf.open(stream=file_bytes, filetype="pdf") as pdf:
         if pdf.is_encrypted and not pdf.authenticate(""):
@@ -181,27 +181,32 @@ def ingest_pdf_file(filename: str, file_bytes: bytes, force_ocr=False):
             pages.append((page_number, text, used_ocr))
     medical_category = classify_document(pages)
     (UPLOAD_DIR / f"{doc_id}_{safe_name}").write_bytes(file_bytes)
-    return _replace_document(doc_id, safe_name, "pdf", pages, medical_category)
+    return _replace_document(doc_id, safe_name, "pdf", pages, medical_category, user_id)
 
 
-def ingest_conversation(title: str, text: str):
+def ingest_conversation(title: str, text: str, user_id=None):
     title = Path(title.strip() or "conversation.txt").name[:160]
     text = text.strip()
     if not text:
         raise ValueError("Conversation text is empty.")
     medical_category = classify_document([(1, text, False)])
-    digest = hashlib.sha1((title + "\n" + text).encode()).hexdigest()[:10]
+    digest = hashlib.sha1((str(user_id) + ":" + title + "\n" + text).encode()).hexdigest()[:10]
     doc_id = f"conv_{digest}"
     (UPLOAD_DIR / f"{doc_id}.txt").write_text(text, encoding="utf-8")
-    return _replace_document(doc_id, title, "conversation", [(1, text, False)], medical_category)
+    return _replace_document(doc_id, title, "conversation", [(1, text, False)], medical_category, user_id)
 
 
-def rechunk_all():
+def rechunk_all(user_id=None):
     with get_connection() as conn:
         pages = conn.execute(
             "SELECT p.document_id, p.page_number, p.text_content FROM pages p "
             "JOIN documents d ON d.id = p.document_id WHERE d.medical_category IS NOT NULL "
+            + ("AND d.user_id = ? " if user_id else "")
             "ORDER BY p.document_id, p.page_number"
+        ).fetchall() if not user_id else db.execute(
+            "SELECT p.document_id, p.page_number, p.text_content FROM pages p "
+            "JOIN documents d ON d.id = p.document_id WHERE d.medical_category IS NOT NULL AND d.user_id = ? "
+            "ORDER BY p.document_id, p.page_number", (user_id,)
         ).fetchall()
         conn.execute("DELETE FROM chunks_fts")
         conn.execute("DELETE FROM chunks")

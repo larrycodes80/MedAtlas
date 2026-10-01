@@ -14,6 +14,7 @@ def init_db():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS documents (
         id TEXT PRIMARY KEY,
+        user_id TEXT,
         filename TEXT NOT NULL,
         source_type TEXT NOT NULL,
         medical_category TEXT,
@@ -23,6 +24,8 @@ def init_db():
     """)
     if "medical_category" not in {row[1] for row in cursor.execute("PRAGMA table_info(documents)")}:
         cursor.execute("ALTER TABLE documents ADD COLUMN medical_category TEXT")
+    if "user_id" not in {row[1] for row in cursor.execute("PRAGMA table_info(documents)")}:
+        cursor.execute("ALTER TABLE documents ADD COLUMN user_id TEXT")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS pages (
@@ -71,6 +74,7 @@ def init_db():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS audit_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
         action TEXT NOT NULL,
         target_type TEXT NOT NULL,
         target_id TEXT,
@@ -78,6 +82,8 @@ def init_db():
         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
+    if "user_id" not in {row[1] for row in cursor.execute("PRAGMA table_info(audit_logs)")}:
+        cursor.execute("ALTER TABLE audit_logs ADD COLUMN user_id TEXT")
 
     conn.commit()
     conn.close()
