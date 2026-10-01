@@ -75,7 +75,8 @@ def _code_counter(secret, code, last=-1):
 def _session(response, db, now):
     token = secrets.token_urlsafe(32)
     db.execute("INSERT INTO auth_sessions(token_hash, expires_at) VALUES (?, ?)", (hashlib.sha256(token.encode()).hexdigest(), now + 12 * 3600))
-    response.set_cookie(COOKIE, token, httponly=True, samesite="strict", max_age=12 * 3600, path="/api")
+    response.delete_cookie(COOKIE, path="/api")
+    response.set_cookie(COOKIE, token, httponly=True, samesite="strict", max_age=12 * 3600, path="/")
 
 
 def init_auth():
@@ -95,10 +96,16 @@ def current_profile(request):
 
 
 @router.get("/status")
-def status(request: Request):
+def status(request: Request, response: Response):
     with get_connection() as db:
         enrolled = bool(db.execute("SELECT 1 FROM auth_owner WHERE id=1").fetchone())
-    return {"enrolled": enrolled, "profile": current_profile(request)}
+    profile = current_profile(request)
+    # Migrate sessions created by older builds from /api to the app-wide path.
+    token = request.cookies.get(COOKIE, "")
+    if profile and token:
+        response.delete_cookie(COOKIE, path="/api")
+        response.set_cookie(COOKIE, token, httponly=True, samesite="strict", max_age=12 * 3600, path="/")
+    return {"enrolled": enrolled, "profile": profile}
 
 
 @router.post("/enroll")
@@ -167,5 +174,6 @@ def logout(request: Request, response: Response):
     if token:
         with get_connection() as db:
             db.execute("DELETE FROM auth_sessions WHERE token_hash=?", (hashlib.sha256(token.encode()).hexdigest(),))
+    response.delete_cookie(COOKIE, path="/")
     response.delete_cookie(COOKIE, path="/api")
     return {"ok": True}

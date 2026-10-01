@@ -16,7 +16,9 @@ with tempfile.TemporaryDirectory() as vault:
         secret = setup.json()["manualKey"]
         assert setup.json()["qr"].startswith("data:image/png;base64,")
         code = pyotp.TOTP(secret).now()
-        assert client.post("/api/auth/activate", json={"code": code}).status_code == 200
+        activated = client.post("/api/auth/activate", json={"code": code})
+        assert activated.status_code == 200
+        assert "medatlas_session=" in activated.headers["set-cookie"] and "Path=/;" in activated.headers["set-cookie"]
         assert client.get("/api/sources").status_code == 200
         assert client.post("/api/auth/enroll", json=profile).status_code == 409
         assert client.post("/api/auth/logout").status_code == 200
