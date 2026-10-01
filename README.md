@@ -20,6 +20,28 @@ MedAtlas is a local-first medical document workspace. It keeps accounts, uploade
 - Insurance checklist, tagged insurance-source discovery, and offline folder bundling.
 - One-command Windows startup with no runtime internet dependency.
 
+## UI screenshots
+
+The following captures show the local MedAtlas experience: landing page, account access, dashboard, document ingestion, health questions, and insurance checklist.
+
+<table>
+  <tr>
+    <td><img src="docs/ui/01-landing-page.png" alt="MedAtlas landing page" width="480"></td>
+    <td><img src="docs/ui/02-login.png" alt="MedAtlas login dialog" width="480"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/ui/03-dashboard.png" alt="MedAtlas dashboard" width="480"></td>
+    <td><img src="docs/ui/04-documents-panel.png" alt="MedAtlas documents panel" width="480"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/ui/05-health-trends-panel.png" alt="MedAtlas health trends question panel" width="480"></td>
+    <td><img src="docs/ui/06-insurance-panel.png" alt="MedAtlas insurance policy panel" width="480"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/ui/07-insurance-checklist.png" alt="MedAtlas insurance claim checklist" width="480"></td>
+  </tr>
+</table>
+
 ## End-to-end pipeline
 
 ~~~mermaid
