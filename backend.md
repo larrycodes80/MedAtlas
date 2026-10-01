@@ -97,3 +97,5 @@ Get-ChildItem backend -Filter *.py | ForEach-Object { & .\backend\.venv\Scripts\
 ```
 
 The smoke check covers semantic splitting and rejects a fabricated quote. Live checks should include a supported record question, an unrelated question that abstains, and a treatment-advice question that the guard blocks.
+
+The local offline validation also covers password account creation/login/logout, real local guard and Qwen calls, PDF extraction and medical classification, semantic chunking, FAISS/BM25 indexing, user-scoped Insurance & Consent file retrieval, and the production frontend build. Runtime listeners are restricted to `127.0.0.1`; model downloads and package installs are setup steps only.

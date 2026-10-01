@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
-import { ArrowDown, ArrowRight, ArrowUpRight, Asterisk, ChartNoAxesCombined, FileText, Heart, LogOut, Pause, Play, Plus, ShieldCheck, Sparkles, Upload } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUpRight, Asterisk, ChartNoAxesCombined, Download, FileText, Heart, LogOut, Pause, Play, Plus, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 type Profile = { userId: string; name: string; dateOfBirth: string };
@@ -14,6 +14,19 @@ async function auth<T>(path: string, body?: object): Promise<T> {
 
 type Panel = "documents" | "trends" | "insurance" | null;
 type LocalDocument = { id: string; name: string; size: number; status: "processing" | "ready" | "rejected"; detail?: string };
+type InsuranceSource = { id: string; filename: string; medical_category: string };
+type LocalWritable = { write: (data: Blob) => Promise<void>; close: () => Promise<void> };
+type LocalDirectory = { getDirectoryHandle: (name: string, options?: { create?: boolean }) => Promise<LocalDirectory>; getFileHandle: (name: string, options?: { create?: boolean }) => Promise<{ createWritable: () => Promise<LocalWritable> }> };
+const CLAIM_DOCUMENTS = [
+  ["Claim Form", "Duly filled and signed by the patient or policyholder and the treating hospital; this is the formal reimbursement request."],
+  ["Original Discharge Summary", "Complete hospitalization narrative with admission date, diagnosis, line of treatment, procedures, and discharge advice."],
+  ["Itemized Hospital Bills and Receipts", "Final granular hospital bill with room rent, operating theater, doctor fees, and original stamped payment receipts."],
+  ["Diagnostic Reports and Requisitions", "Pathology and imaging reports accompanied by the doctor's notes prescribing those tests."],
+  ["Pharmacy Invoices and Prescriptions", "Original itemized chemist bills paired with the corresponding medically necessary prescriptions."],
+  ["Initial Consultation Papers", "The first OPD prescription or referral note recommending hospitalization or surgery."],
+  ["Patient KYC and Insurance ID", "Government identity proof such as Aadhaar, PAN, or Passport, plus the Health Insurance or TPA ID card."],
+  ["Cancelled Cheque", "Voided cheque printed with the policyholder's name, account number, and routing code for NEFT/RTGS."],
+] as const;
 const emptyProfile = { name: "", dateOfBirth: "", password: "" };
 
 function Brand({ small = false }: { small?: boolean }) {
@@ -105,7 +118,29 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
   const [answer, setAnswer] = useState<{ answer: string; citations: { filename: string; page_number: number }[]; abstained: boolean } | null>(null);
   const [questionError, setQuestionError] = useState("");
   const [asking, setAsking] = useState(false);
+  const [policyId, setPolicyId] = useState("");
+  const [policySubmitted, setPolicySubmitted] = useState(false);
+  const [claimChecklist, setClaimChecklist] = useState<Record<number, boolean>>({});
+  const [insuranceSources, setInsuranceSources] = useState<InsuranceSource[]>([]);
+  const [insuranceError, setInsuranceError] = useState("");
+  const [savingInsurance, setSavingInsurance] = useState(false);
+  const [insuranceSaved, setInsuranceSaved] = useState("");
   const titles = { documents: "Your documents", trends: "Your health trends", insurance: "Your insurance claim" };
+  const allClaimDocumentsReady = CLAIM_DOCUMENTS.every((_, index) => claimChecklist[index]);
+
+  useEffect(() => {
+    if (panel !== "insurance" || !policySubmitted) return;
+    let active = true;
+    setInsuranceError(""); setInsuranceSaved("");
+    fetch("/api/sources", { credentials: "same-origin" })
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || "Could not load insurance documents.");
+        if (active) setInsuranceSources((result.sources || []).filter((source: InsuranceSource) => source.medical_category === "Insurance & Consent"));
+      })
+      .catch(error => { if (active) setInsuranceError(error instanceof Error ? error.message : "Could not load insurance documents."); });
+    return () => { active = false; };
+  }, [panel, policySubmitted]);
   async function addFiles(files: FileList | null) {
     if (!files) return;
     const accepted: LocalDocument[] = [];
@@ -151,6 +186,36 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
     } catch (error) { setQuestionError(error instanceof Error ? error.message : "The local health pipeline could not answer."); }
     finally { setAsking(false); }
   }
+  function submitPolicy(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (policyId.trim()) { setInsuranceError(""); setInsuranceSaved(""); setPolicySubmitted(true); }
+  }
+  async function saveInsuranceBundle() {
+    const picker = (window as unknown as { showDirectoryPicker?: (options?: { mode: "readwrite" }) => Promise<LocalDirectory> }).showDirectoryPicker;
+    if (!picker) { setInsuranceError("Folder saving is unavailable in this browser. Use Brave, Chrome, or Edge."); return; }
+    setSavingInsurance(true); setInsuranceError(""); setInsuranceSaved("");
+    try {
+      const parent = await picker({ mode: "readwrite" });
+      const folder = await parent.getDirectoryHandle("Insurance documents", { create: true });
+      const usedNames = new Set<string>();
+      for (const source of insuranceSources) {
+        const response = await fetch(`/api/documents/${encodeURIComponent(source.id)}/file`, { credentials: "same-origin" });
+        if (!response.ok) throw new Error(`Could not read ${source.filename}.`);
+        const original = source.filename || `document-${source.id}`;
+        const extension = original.includes(".") ? original.slice(original.lastIndexOf(".")) : ".pdf";
+        const base = original.slice(0, original.length - extension.length) || "document";
+        let filename = original; let copy = 2;
+        while (usedNames.has(filename)) filename = `${base} (${copy++})${extension}`;
+        usedNames.add(filename);
+        const writable = await (await folder.getFileHandle(filename, { create: true })).createWritable();
+        await writable.write(await response.blob());
+        await writable.close();
+      }
+      setInsuranceSaved(`Saved ${insuranceSources.length} document${insuranceSources.length === 1 ? "" : "s"} in the Insurance documents folder.`);
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "AbortError")) setInsuranceError(error instanceof Error ? error.message : "Could not save the insurance documents.");
+    } finally { setSavingInsurance(false); }
+  }
   return <Sheet open={panel !== null} onOpenChange={value => { if (!value) { setFileError(""); onClose(); } }}>
     <SheetContent className="feature-sheet">
       <SheetHeader><span className="eyebrow">YOUR MEDATLAS</span><SheetTitle className="panel-title">{panel ? titles[panel] : "Your health space"}</SheetTitle><SheetDescription className="panel-description">{panel === "documents" ? "One place for the pieces of your health story." : panel === "trends" ? "A clearer picture of your health over time." : "A little less paperwork. A little more peace of mind."}</SheetDescription></SheetHeader>
@@ -166,7 +231,15 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
         {questionError && <p className="form-error" role="alert">{questionError}</p>}
         {answer && <div className={`question-answer ${answer.abstained ? "is-abstained" : ""}`}><strong>{answer.abstained ? "I could not verify that from your sources." : "Verified from your sources"}</strong><p>{answer.answer}</p>{answer.citations?.length > 0 && <ul className="citation-list">{answer.citations.map((citation, index) => <li key={`${citation.filename}-${citation.page_number}-${index}`}>[{index + 1}] {citation.filename} · page {citation.page_number}</li>)}</ul>}</div>}
         <p className="panel-note">Questions are sent only to the local MedAtlas backend. Diagnosis, treatment, and unsupported answers are blocked or declined.</p>
-      </> : <><div className="empty-panel empty-insurance"><ShieldCheck size={57} strokeWidth={1.3}/><h3>A clearer path to your claim.</h3><p>Your policy documents, claim details, and progress will come together here.</p><span className="preview-label">FRONTEND PREVIEW</span></div><p className="panel-note">Claim management will be connected in the next build. No claim has been submitted.</p></>}</div>}
+      </> : <>{panel === "insurance" ? <>
+        <form className="policy-form" onSubmit={submitPolicy}><label htmlFor="policy-reference">Insurance policy reference ID</label><div className="question-row"><input id="policy-reference" className="question-input" value={policyId} onChange={event => { setPolicyId(event.target.value); setPolicySubmitted(false); setClaimChecklist({}); setInsuranceSources([]); setInsuranceSaved(""); }} placeholder="Enter your policy reference" maxLength={120} required/><button className="button button-dark" type="submit">Continue</button></div></form>
+        {policySubmitted && <div className="claim-checklist"><div className="claim-heading"><strong>CLAIM CHECKLIST</strong><span>{CLAIM_DOCUMENTS.filter((_, index) => claimChecklist[index]).length}/{CLAIM_DOCUMENTS.length}</span></div><p className="policy-label">Policy reference: <strong>{policyId.trim()}</strong></p>{CLAIM_DOCUMENTS.map(([title, description], index) => <label className={`claim-item ${claimChecklist[index] ? "is-done" : ""}`} key={title}><input type="checkbox" checked={Boolean(claimChecklist[index])} onChange={event => setClaimChecklist(previous => ({ ...previous, [index]: event.target.checked }))}/><span><strong>{index + 1}. {title}</strong><small>{description}</small></span></label>)}{CLAIM_DOCUMENTS.some((_, index) => !claimChecklist[index]) ? <p className="claim-reminder">Reminder: upload the unchecked documents so your claim process remains hassle-free.</p> : <p className="claim-complete">All required documents are marked ready.</p>}
+          <div className="insurance-sources"><div className="claim-heading"><strong>TAGGED INSURANCE DOCUMENTS</strong><span>{insuranceSources.length}</span></div>{insuranceSources.length ? <ul className="insurance-source-list">{insuranceSources.map(source => <li key={source.id}><FileText size={16}/><span>{source.filename}</span></li>)}</ul> : <p className="policy-label">No uploaded documents tagged “Insurance & Consent” were found yet.</p>}</div>
+          <button className="button button-dark insurance-save" type="button" disabled={!allClaimDocumentsReady || !insuranceSources.length || savingInsurance} onClick={() => void saveInsuranceBundle()}><Download size={17}/>{savingInsurance ? "Saving offline…" : "Bundle and save offline"}</button>
+          {insuranceError && <p className="form-error" role="alert">{insuranceError}</p>}{insuranceSaved && <p className="claim-complete" role="status">{insuranceSaved}</p>}
+        </div>}
+        {!policySubmitted && <div className="empty-panel empty-insurance"><ShieldCheck size={57} strokeWidth={1.3}/><h3>A clearer path to your claim.</h3><p>Enter your policy reference to see the required documents.</p></div>}
+      </> : <><div className="empty-panel empty-insurance"><ShieldCheck size={57} strokeWidth={1.3}/><h3>A clearer path to your claim.</h3><p>Your policy documents, claim details, and progress will come together here.</p><span className="preview-label">FRONTEND PREVIEW</span></div><p className="panel-note">Claim management will be connected in the next build. No claim has been submitted.</p></>}</>}</div>}
     </SheetContent>
   </Sheet>;
 }
