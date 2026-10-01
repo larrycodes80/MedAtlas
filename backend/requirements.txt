@@ -1,0 +1,14 @@
+fastapi==0.142.1
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+pymupdf==1.28.2
+pytesseract==0.3.13
+pillow==12.3.0
+sentence-transformers==6.1.0
+huggingface-hub==1.33.0
+faiss-cpu==1.15.1
+httpx==0.28.1
+python-dotenv==1.2.3
+pyotp==2.10.0
+qrcode==8.2
+cryptography==50.0.2

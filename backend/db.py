@@ -16,10 +16,13 @@ def init_db():
         id TEXT PRIMARY KEY,
         filename TEXT NOT NULL,
         source_type TEXT NOT NULL,
+        medical_category TEXT,
         page_count INTEGER DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """)
+    if "medical_category" not in {row[1] for row in cursor.execute("PRAGMA table_info(documents)")}:
+        cursor.execute("ALTER TABLE documents ADD COLUMN medical_category TEXT")
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS pages (

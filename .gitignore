@@ -17,6 +17,13 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+data/*.key
+data/faiss.npz
+data/faiss.index
+minio_data/
+minio.exe
+backend/work/
+.cache/
 
 # Ignore heavy downloaded AI models
 models/

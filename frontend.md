@@ -1,13 +1,7 @@
-# MedAtlas Frontend Plan (`frontend/`)
+# MedAtlas local frontend
 
-## 1. Tech Used
-- **App:** Next.js (JavaScript) running on `http://127.0.0.1:3000`
-- **Talks to Backend at:** `http://127.0.0.1:8000`
+The local Next.js app at `http://127.0.0.1:3000` uses the supplied MedAtlas visual design. The landing page has a translucent anatomical brain and light sparks. The dashboard has a quiet anatomical heart and heartbeat animation, a light grain texture, scroll reveal, and three larger pastel cards. The original panels and copy remain. The document panel links to `/workspace`, which contains the existing medical upload, search, chat, memory review, and audit tools.
 
-## 2. Dashboard Screens
-1. **Top Status Bar:** Shows green/red indicators for Backend, SQLite, ChromaDB, and Ollama, plus a "Rebuild Vector DB" button.
-2. **Sources Screen:** Upload PDF button, Paste Conversation box, and list of uploaded files.
-3. **Chat Screen:** Ask medical questions, see Llama Guard safety badges, and read cited page numbers + quotes.
-4. **Memory Review Screen:** See facts Qwen found with **Approve** and **Reject** buttons.
-5. **Patient Concepts Screen:** View approved Conditions, Medications, Allergies, and Lab Results sorted cleanly.
-6. **Audit Log Screen:** View a timeline of every upload, approval, or rejection.
+The login form asks for name, date of birth, and mobile number. The mobile number is an account detail; no SMS is sent. First use shows an authenticator QR code and manual key. Scan it with a TOTP app, enter its current six-digit code, and keep a backup of the authenticator entry. Later logins need the same profile details and a fresh code. The backend verifies the code and issues a local HttpOnly session cookie. `/workspace` and every medical API endpoint require that session. No internet is needed for TOTP after setup.
+
+The frontend proxies `/api/*` to the local FastAPI server on `127.0.0.1:8000`, so browser cookies stay on one origin. Set `MEDATLAS_BACKEND_URL` before building or starting Next if you deliberately run the backend on another port. See [backend.md](backend.md) for local startup and offline requirements. The current hosted Site is a separate deployment and cannot connect to this offline backend.

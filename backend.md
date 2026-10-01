@@ -1,29 +1,90 @@
-# MedAtlas Backend Plan (`backend/`)
+# MedAtlas backend
 
-## 1. Tech Used
-- **Server:** FastAPI running on `http://127.0.0.1:8000`
-- **Database:** SQLite (`data/medatlas.db`) + FTS5 keyword search
-- **Vector Search:** ChromaDB (`data/chroma/`) + `bge-small-en-v1.5`
-- **Local LLM:** Ollama (`http://127.0.0.1:11434`) running `qwen3:4b` and `llama-guard3:1b`
-- **PDF & OCR:** PyMuPDF + Tesseract OCR
+MedAtlas runs locally at `http://127.0.0.1:8000`. SQLite stores source text, semantic chunks, proposed memories, and audit events. The FAISS vector index is rebuilt from SQLite. SQLite FTS5 supplies BM25 keyword ranking. A local cross-encoder reranks the combined candidates.
 
-## 2. SQLite Tables
-1. `documents` - Stores file info (`id`, `filename`, `source_type`, `page_count`, `created_at`)
-2. `pages` - Stores text per page (`id`, `document_id`, `page_number`, `text_content`, `used_ocr`)
-3. `chunks` - Smaller pieces of text for search (`id`, `document_id`, `page_number`, `chunk_index`, `text_content`, `quote_snippet`)
-4. `chunks_fts` - Keyword search table linked to `chunks`
-5. `memories` - Medical facts (`id`, `category`, `fact_text`, `source_document_id`, `source_page`, `source_quote`, `status`)
-6. `audit_logs` - History of every action (`id`, `action`, `target_type`, `target_id`, `details`, `timestamp`)
+The local vault requires authenticator login. `backend/auth.py` stores one owner profile (name, birth date, mobile) and an encrypted TOTP secret in SQLite. Its separate encryption key is created in ignored `data/totp.key`; preserve both the database and key during backup or migration. Enrollment confirms a real six-digit code before activating the owner. Fresh codes cannot be reused; five failed logins lock the account for five minutes. Sessions last twelve hours and use HttpOnly, SameSite cookies. All medical, search, upload, file, memory, audit, and admin routes require a valid session. `GET /api/health` and the authenticator endpoints remain available before login. Mobile numbers are not verified by SMS. Keep a backed-up authenticator entry: there is no self-service reset based on personal details.
 
-## 3. API Routes to Build
-- `GET /api/health` - Check if SQLite, ChromaDB, and Ollama are working
-- `POST /api/ingest/pdf` - Upload and process a PDF file
-- `POST /api/ingest/conversation` - Save pasted doctor/patient notes
-- `GET /api/sources` - List all uploaded documents
-- `GET /api/search` - Search chunks using ChromaDB + SQLite FTS5
-- `POST /api/chat` - Safe Q&A with Llama Guard + Qwen + Citations
-- `GET /api/memories` - List pending, approved, or rejected memories
-- `POST /api/memories/{id}/decision` - Approve or reject a proposed memory
-- `GET /api/concepts` - Group approved memories into a patient dashboard
-- `GET /api/audit` - Show the full audit history
-- `POST /api/admin/rebuild-chroma` - Rebuild ChromaDB from SQLite
+## Answer pipeline
+
+`Question → Llama Guard 3 1B input check → FAISS + BM25 retrieval (top 10) → cross-encoder rerank → Qwen3 4B → exact quote/citation check → Llama Guard output check → answer`
+
+- Qwen runs at temperature `0` and selects up to three complete source quotes. The backend assembles the visible answer from those quotes, with a citation for each one.
+- Llama Guard runs at temperature `0.2` for input and output checks.
+- The model sees short source labels; the backend maps them to retrieved SQLite chunks and requires exact quotes. A second relevance check rejects unrelated quotes.
+- Weak retrieval, missing evidence, or a failed check produces an abstention. The reranker cutoff is a heuristic, not a medical confidence probability; tune it against a labeled evaluation set before relying on it for clinical use.
+- Medical diagnosis, treatment, and dosing advice are outside the Q&A scope. Llama Guard checks the user request and final text; Qwen is also instructed to abstain from those requests.
+- Semantic chunking groups neighboring sentences using the local BGE embedding model, respecting paragraph boundaries and a 650-character ceiling.
+
+## Before ingestion
+
+PDFs are text-extracted or OCR'd first. Pasted text is checked directly. A local Qwen classification call rejects content that is not clearly one of these medical document types **before** saving, chunking, BM25 indexing, or embedding: Laboratory & Pathology Reports; Diagnostic Imaging Reports; Clinical Notes & Summaries; Therapeutics & Prescriptions; Patient-Generated Health Data (PGHD); Insurance & Consent. The model must return a verbatim medical-content excerpt; missing or invalid evidence is rejected. Accepted documents store their category in SQLite and expose it through upload responses, `/api/sources`, and search results. Uncertain or invalid classifications fail closed. Older documents without a category are kept but quarantined: they are excluded from search and future index rebuilds, not silently deleted. Restart the backend after updating it; the frontend pauses ingestion and search until `/api/health` reports that the medical gate is active.
+
+## Why FAISS rather than ChromaDB
+
+The current local stack uses SQLite for authoritative text, metadata, and FTS5/BM25, plus FAISS for exact vector search. ChromaDB can also run locally and offline; it is simply not needed for this small corpus. Compared with ChromaDB, we manage metadata joins and persistence ourselves. This implementation fully rebuilds the FAISS file after each upload and loads it for each query, so ingestion and query overhead will grow with the corpus. SQLite remains authoritative, index writes are atomic, a chunk-count check detects some stale indexes, and `/api/admin/rebuild-index` repairs the vector copy. This does not eliminate every consistency risk; if the corpus becomes large or needs richer metadata filtering, evaluate incremental FAISS indexing or ChromaDB then.
+
+## Setup (PowerShell, from the repository root)
+
+```powershell
+python -m venv backend\.venv
+& .\backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+& .\backend\.venv\Scripts\python.exe backend\prepare_models.py
+& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" pull qwen3:4b
+& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" pull llama-guard3:1b
+& .\backend\prepare_guard.ps1
+& .\backend\.venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+`prepare_models.py` downloads pinned BGE and MiniLM model revisions once; inference runs locally afterward. The Ollama commands assume its standard Windows install path. `prepare_guard.ps1` creates the local `medatlas-guard` model. Optional settings go in ignored `backend/.env`. Model weights, data files, and `.env` stay out of Git.
+
+## Offline use on this PC
+
+Tesseract 5.4.0 is installed at `C:\Users\Satwik\AppData\Local\Programs\Tesseract-OCR\tesseract.exe`, with English OCR data. The ignored `backend/.env` points `TESSERACT_CMD` there. The Python environment, BGE and reranker weights, Ollama's `qwen3:4b` and `medatlas-guard` models, frontend packages, SQLite database, and FAISS index are also local. Keep those files when copying or rebuilding the project: Git intentionally excludes them.
+
+From the repository root, start Ollama if it is not already running, then use separate PowerShell windows for the backend and frontend:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" serve
+```
+
+```powershell
+$env:HF_HUB_OFFLINE = '1'
+$env:TRANSFORMERS_OFFLINE = '1'
+& .\backend\.venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
+```
+
+```powershell
+$env:NEXT_TELEMETRY_DISABLED = '1'
+& .\frontend\node_modules\.bin\next.cmd dev --hostname 127.0.0.1 --port 3000
+```
+
+Open `http://127.0.0.1:3000`. OCR, local PDF ingestion, chunking, search, reranking, and model answers use local files and loopback connections. Do not run `pip install`, `npm install`, model pulls, or `prepare_models.py` while offline; those are one-time setup commands for a new machine. The hosted site and remote URLs require internet.
+
+Close older backend and frontend terminal processes before starting the updated app on ports 8000 and 3000. Confirm `http://127.0.0.1:8000/api/auth/status` returns JSON and that an unsigned request to `/api/sources` returns HTTP 401; an old backend still running on port 8000 will not enforce the new gate.
+
+On an existing database, migrate old fixed-size chunks and build FAISS through the authenticated admin API after signing in. Direct admin API calls need the browser's session cookie.
+
+## API
+
+- `GET /api/health`: SQLite, FAISS, BGE, reranker, and Ollama status.
+- `POST /api/ingest/pdf?force_ocr=false`: PDF text or OCR, medical classification, semantic chunks, BM25, and FAISS.
+- `POST /api/ingest/conversation`: `{ "title": "...", "text": "..." }`; same medical gate for pasted text.
+- `GET /api/sources`: ingested documents, medical categories, and chunk counts.
+- `GET /api/search?q=...&limit=10`: hybrid FAISS/BM25 search with reranker scores and categories.
+- `POST /api/chat`: `{ "query": "..." }`; returns `answer`, cited source quotes, and `abstained`.
+- `POST /api/memories/propose`: `{ "document_id": "..." }`; creates pending memory proposals.
+- `GET /api/memories?status=pending|approved|rejected` and `POST /api/memories/{id}/decision`: review memories.
+- `GET /api/concepts`: approved memories grouped by category.
+- `GET /api/audit?limit=100`: recent audit events.
+- `POST /api/admin/rebuild-index`: rebuilds FAISS from current SQLite chunks.
+- `POST /api/admin/rechunk`: rebuilds semantic chunks, BM25, and FAISS from stored pages.
+- `GET /api/documents/{id}/file`: downloads the original source.
+
+## Checks
+
+```powershell
+& .\backend\.venv\Scripts\python.exe backend\smoke.py
+Get-ChildItem backend -Filter *.py | ForEach-Object { & .\backend\.venv\Scripts\python.exe -m py_compile $_.FullName }
+```
+
+The smoke check covers semantic splitting and rejects a fabricated quote. Live checks should include a supported record question, an unrelated question that abstains, and a treatment-advice question that the guard blocks.
