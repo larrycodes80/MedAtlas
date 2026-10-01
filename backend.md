@@ -1,6 +1,6 @@
 # MedAtlas backend
 
-MedAtlas runs locally at `http://127.0.0.1:8000`. SQLite stores source text, semantic chunks, proposed memories, and audit events. The FAISS vector index is rebuilt from SQLite. SQLite FTS5 supplies BM25 keyword ranking. A local cross-encoder reranks the combined candidates.
+MedAtlas runs locally at `http://127.0.0.1:8765` for the integrated frontend. SQLite stores source text, semantic chunks, proposed memories, and audit events. The FAISS vector index is rebuilt from SQLite. SQLite FTS5 supplies BM25 keyword ranking. A local cross-encoder reranks the combined candidates.
 
 The local vault requires authenticator login. `backend/auth.py` stores one owner profile (name, birth date, mobile) and an encrypted TOTP secret in SQLite. Its separate encryption key is created in ignored `data/totp.key`; preserve both the database and key during backup or migration. Enrollment confirms a real six-digit code before activating the owner. Fresh codes cannot be reused; five failed logins lock the account for five minutes. Sessions last twelve hours and use HttpOnly, SameSite cookies. All medical, search, upload, file, memory, audit, and admin routes require a valid session. `GET /api/health` and the authenticator endpoints remain available before login. Mobile numbers are not verified by SMS. Keep a backed-up authenticator entry: there is no self-service reset based on personal details.
 
@@ -41,7 +41,15 @@ python -m venv backend\.venv
 
 Tesseract 5.4.0 is installed at `C:\Users\Satwik\AppData\Local\Programs\Tesseract-OCR\tesseract.exe`, with English OCR data. The ignored `backend/.env` points `TESSERACT_CMD` there. The Python environment, BGE and reranker weights, Ollama's `qwen3:4b` and `medatlas-guard` models, frontend packages, SQLite database, and FAISS index are also local. Keep those files when copying or rebuilding the project: Git intentionally excludes them.
 
-From the repository root, start Ollama if it is not already running, then use separate PowerShell windows for the backend and frontend:
+From the repository root, run the single local launcher:
+
+```powershell
+.\start-local.ps1
+```
+
+It starts Ollama, FastAPI on `127.0.0.1:8765`, and Next.js on `127.0.0.1:3002`, with offline model flags enabled. The launcher uses only loopback services.
+
+Manual startup is also available in separate PowerShell windows:
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe" serve
@@ -50,17 +58,17 @@ From the repository root, start Ollama if it is not already running, then use se
 ```powershell
 $env:HF_HUB_OFFLINE = '1'
 $env:TRANSFORMERS_OFFLINE = '1'
-& .\backend\.venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000
+& .\backend\.venv\Scripts\python.exe -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8765
 ```
 
 ```powershell
 $env:NEXT_TELEMETRY_DISABLED = '1'
-& .\frontend\node_modules\.bin\next.cmd dev --hostname 127.0.0.1 --port 3000
+& .\frontend\node_modules\.bin\next.cmd dev --hostname 127.0.0.1 --port 3002
 ```
 
-Open `http://127.0.0.1:3000`. OCR, local PDF ingestion, chunking, search, reranking, and model answers use local files and loopback connections. Do not run `pip install`, `npm install`, model pulls, or `prepare_models.py` while offline; those are one-time setup commands for a new machine. The hosted site and remote URLs require internet.
+Open `http://127.0.0.1:3002`. OCR, local PDF ingestion, chunking, search, reranking, and model answers use local files and loopback connections. Do not run `pip install`, `npm install`, model pulls, or `prepare_models.py` while offline; those are one-time setup commands for a new machine. The hosted site and remote URLs require internet.
 
-Close older backend and frontend terminal processes before starting the updated app on ports 8000 and 3000. Confirm `http://127.0.0.1:8000/api/auth/status` returns JSON and that an unsigned request to `/api/sources` returns HTTP 401; an old backend still running on port 8000 will not enforce the new gate.
+Close older backend and frontend terminal processes before starting the updated app on ports 8765 and 3002. Confirm `http://127.0.0.1:3002/api/auth/status` returns JSON and that an unsigned request to `http://127.0.0.1:3002/api/sources` returns HTTP 401.
 
 On an existing database, migrate old fixed-size chunks and build FAISS through the authenticated admin API after signing in. Direct admin API calls need the browser's session cookie.
 

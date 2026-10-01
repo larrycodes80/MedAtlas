@@ -4,6 +4,9 @@ from dotenv import load_dotenv
 
 env_path = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=env_path)
+# Runtime inference is local-only; model libraries must not fall back to Hub downloads.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 root = Path(__file__).resolve().parents[1]
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
