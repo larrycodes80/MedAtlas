@@ -49,6 +49,12 @@ From the repository root, run the single local launcher:
 
 It starts Ollama, FastAPI on `127.0.0.1:8765`, and Next.js on `127.0.0.1:3002`, with offline model flags enabled. The launcher uses only loopback services.
 
+For a one-click Windows shortcut that starts the same services and opens the app automatically, double-click `start-medatlas.cmd` or run it from PowerShell:
+
+```powershell
+.\start-medatlas.cmd
+```
+
 Manual startup is also available in separate PowerShell windows:
 
 ```powershell

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
-import { ArrowDown, ArrowRight, ArrowUpRight, Asterisk, ChartNoAxesCombined, Download, FileText, Heart, LogOut, Pause, Play, Plus, ShieldCheck, Sparkles, Upload } from "lucide-react";
+import { ArrowDown, ArrowRight, ArrowUpRight, Asterisk, ChartNoAxesCombined, CheckCircle2, Download, FileText, Heart, LogOut, Pause, Play, Plus, ShieldCheck, Sparkles, Upload } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 type Profile = { userId: string; name: string; dateOfBirth: string };
@@ -13,7 +13,7 @@ async function auth<T>(path: string, body?: object): Promise<T> {
 }
 
 type Panel = "documents" | "trends" | "insurance" | null;
-type LocalDocument = { id: string; name: string; size: number; status: "processing" | "ready" | "rejected"; detail?: string };
+type LocalDocument = { id: string; name: string; size: number; status: "processing" | "ready" | "rejected"; progress: number; stage: string; detail?: string };
 type InsuranceSource = { id: string; filename: string; medical_category: string };
 type LocalWritable = { write: (data: Blob) => Promise<void>; close: () => Promise<void> };
 type LocalDirectory = { getDirectoryHandle: (name: string, options?: { create?: boolean }) => Promise<LocalDirectory>; getFileHandle: (name: string, options?: { create?: boolean }) => Promise<{ createWritable: () => Promise<LocalWritable> }> };
@@ -118,6 +118,8 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
   const [answer, setAnswer] = useState<{ answer: string; citations: { filename: string; page_number: number }[]; abstained: boolean } | null>(null);
   const [questionError, setQuestionError] = useState("");
   const [asking, setAsking] = useState(false);
+  const [questionStrikes, setQuestionStrikes] = useState(0);
+  const [questionBlocked, setQuestionBlocked] = useState(false);
   const [policyId, setPolicyId] = useState("");
   const [policySubmitted, setPolicySubmitted] = useState(false);
   const [claimChecklist, setClaimChecklist] = useState<Record<number, boolean>>({});
@@ -141,6 +143,12 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
       .catch(error => { if (active) setInsuranceError(error instanceof Error ? error.message : "Could not load insurance documents."); });
     return () => { active = false; };
   }, [panel, policySubmitted]);
+  useEffect(() => {
+    if (panel !== "trends") return;
+    auth<{ guard?: { strikes: number; blocked: boolean } }>("status")
+      .then(result => { setQuestionStrikes(result.guard?.strikes ?? 0); setQuestionBlocked(Boolean(result.guard?.blocked)); })
+      .catch(() => {});
+  }, [panel]);
   async function addFiles(files: FileList | null) {
     if (!files) return;
     const accepted: LocalDocument[] = [];
@@ -148,7 +156,7 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
     let invalid = false;
     Array.from(files).forEach(file => {
       if (!/\.pdf$/i.test(file.name) || file.size > 10 * 1024 * 1024) { invalid = true; return; }
-      accepted.push({ id: crypto.randomUUID(), name: file.name, size: file.size, status: "processing" });
+      accepted.push({ id: crypto.randomUUID(), name: file.name, size: file.size, status: "processing", progress: 0, stage: "Queued" });
       validFiles.push(file);
     });
     setFileError(invalid ? "Choose PDF files under 10 MB each." : "");
@@ -158,16 +166,20 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
     for (const [index, file] of validFiles.entries()) {
       const item = accepted[index];
       if (!item) continue;
+      const updateProgress = (progress: number, stage: string) => setDocuments(previous => previous.map(document => document.id === item.id ? { ...document, progress, stage } : document));
       const body = new FormData();
       body.append("file", file);
+      updateProgress(10, "Reading PDF");
       try {
+        updateProgress(25, "Checking medical content");
         const response = await fetch("/api/ingest/pdf", { method: "POST", body, credentials: "same-origin" });
+        updateProgress(70, "Building local indexes");
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || "Document rejected.");
         const ingested = result.ingested;
-        setDocuments(previous => previous.map(document => document.id === item.id ? { ...document, status: "ready", detail: `${ingested.medical_category} · ${ingested.chunk_count} chunks` } : document));
+        setDocuments(previous => previous.map(document => document.id === item.id ? { ...document, status: "ready", progress: 100, stage: "Complete", detail: `${ingested.medical_category} · ${ingested.chunk_count} chunks` } : document));
       } catch (error) {
-        setDocuments(previous => previous.map(document => document.id === item.id ? { ...document, status: "rejected", detail: error instanceof Error ? error.message : "Document rejected." } : document));
+        setDocuments(previous => previous.map(document => document.id === item.id ? { ...document, status: "rejected", stage: "Rejected", detail: error instanceof Error ? error.message : "Document rejected." } : document));
       }
     }
     setUploading(false);
@@ -176,11 +188,14 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
   async function askQuestion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const query = question.trim();
-    if (!query || asking) return;
+    if (!query || asking || questionBlocked) return;
     setAsking(true); setQuestionError(""); setAnswer(null);
     try {
       const response = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin", body: JSON.stringify({ query }) });
       const result = await response.json();
+      const strikes = Number(response.headers.get("X-MedAtlas-Guard-Strikes"));
+      if (Number.isFinite(strikes)) setQuestionStrikes(strikes);
+      if (response.headers.get("X-MedAtlas-Guard-Blocked") === "true") setQuestionBlocked(true);
       if (!response.ok) throw new Error(result.detail || "The local health pipeline could not answer.");
       setAnswer(result);
     } catch (error) { setQuestionError(error instanceof Error ? error.message : "The local health pipeline could not answer."); }
@@ -224,10 +239,11 @@ function FeaturePanel({ panel, onClose, documents, setDocuments }: { panel: Pane
         <button disabled={uploading} className={`upload-zone ${dragging ? "is-dragging" : ""}`} onClick={() => inputRef.current?.click()} onDragOver={e => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); void addFiles(e.dataTransfer.files); }}><span className="upload-icon"><Upload size={27}/></span><strong>{uploading ? "Processing offline…" : "Upload your documents"}</strong><span>Click or drop PDF files here</span><small>Medical checks, processing, and storage stay on this device</small></button>
         {fileError && <p className="form-error" role="alert">{fileError}</p>}
         <p className="panel-note">Each upload starts the complete offline medical-document pipeline. Non-medical files are rejected before indexing.</p>
-        {documents.length > 0 && <><div className="file-list-heading">PROCESSING STATUS <span>{documents.length}</span></div><ul className="file-list">{documents.map(doc => <li key={doc.id}><FileText size={23}/><span><strong>{doc.name}</strong><small className={doc.status === "rejected" ? "file-status-rejected" : ""}>{doc.status === "processing" ? "Processing offline…" : doc.status === "ready" ? doc.detail : doc.detail}</small></span></li>)}</ul></>}
+        {documents.length > 0 && <><div className="file-list-heading">PROCESSING STATUS <span>{documents.length}</span></div><ul className="file-list">{documents.map(doc => <li key={doc.id} className={`file-item-${doc.status}`}>{doc.status === "ready" ? <CheckCircle2 size={23} className="file-status-ready" aria-label="Processing complete"/> : <FileText size={23}/>}<span><strong>{doc.name}</strong><small className={doc.status === "rejected" ? "file-status-rejected" : ""}>{doc.stage}{doc.detail ? ` · ${doc.detail}` : ""}</small><span className={`file-progress-row ${doc.status === "rejected" ? "is-rejected" : ""}`}><span className="file-progress" role="progressbar" aria-label={`${doc.name} processing progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={doc.progress}><span className="file-progress-fill" style={{ width: `${doc.progress}%` }}/></span><small className="file-progress-percent">{doc.progress}%</small></span></span></li>)}</ul></>}
       </div> : <div className="panel-body">{panel === "trends" ? <>
         <div className="empty-panel empty-trends"><ChartNoAxesCombined size={57} strokeWidth={1.3}/><h3>Ask about your health.</h3><p>Answers are grounded in your accepted medical documents and checked by the local safety pipeline.</p></div>
-        <form className="question-form" onSubmit={askQuestion}><label htmlFor="health-question">Your question</label><div className="question-row"><input id="health-question" className="question-input" value={question} onChange={event => setQuestion(event.target.value)} maxLength={1000} placeholder="What does my latest report say?"/><button className="button button-dark" type="submit" disabled={asking || !question.trim()}>{asking ? "Checking…" : "Ask"}</button></div></form>
+        <form className="question-form" onSubmit={askQuestion}><label htmlFor="health-question">Your question</label><p className="question-guidance">Questions should be medically relevant. Five rejected questions block question access.</p><div className="question-row"><input id="health-question" className="question-input" value={question} onChange={event => setQuestion(event.target.value)} maxLength={1000} disabled={questionBlocked || asking} placeholder="What does my latest report say?"/><button className="button button-dark" type="submit" disabled={questionBlocked || asking || !question.trim()}>{questionBlocked ? "Access blocked" : asking ? "Checking…" : "Ask"}</button></div></form>
+        {questionStrikes > 0 && <div className={`question-strikes ${questionBlocked ? "is-blocked" : ""}`} role={questionBlocked ? "alert" : "status"}><strong>GuardLLM strikes: {questionStrikes}/5</strong><span>{questionBlocked ? "Question access is blocked after five rejected questions." : "Ask a medically relevant question."}</span></div>}
         {questionError && <p className="form-error" role="alert">{questionError}</p>}
         {answer && <div className={`question-answer ${answer.abstained ? "is-abstained" : ""}`}><strong>{answer.abstained ? "I could not verify that from your sources." : "Verified from your sources"}</strong><p>{answer.answer}</p>{answer.citations?.length > 0 && <ul className="citation-list">{answer.citations.map((citation, index) => <li key={`${citation.filename}-${citation.page_number}-${index}`}>[{index + 1}] {citation.filename} · page {citation.page_number}</li>)}</ul>}</div>}
         <p className="panel-note">Questions are sent only to the local MedAtlas backend. Diagnosis, treatment, and unsupported answers are blocked or declined.</p>

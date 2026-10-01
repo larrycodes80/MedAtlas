@@ -23,6 +23,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+MAX_GUARD_STRIKES = 5
 
 
 @app.middleware("http")
@@ -65,6 +66,33 @@ def _user_id(request):
     if not profile:
         raise HTTPException(401, "Log in to access your medical data.")
     return profile["userId"]
+
+
+def _guard_state(user_id):
+    with get_connection() as db:
+        row = db.execute("SELECT guard_strikes, guard_blocked FROM users WHERE id=?", (user_id,)).fetchone()
+    return (int(row["guard_strikes"]), bool(row["guard_blocked"])) if row else (0, False)
+
+
+def _reject_guarded_question(user_id):
+    with get_connection() as db:
+        row = db.execute("SELECT guard_strikes FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            raise HTTPException(401, "Log in to access your medical data.")
+        strikes = min(int(row["guard_strikes"]) + 1, MAX_GUARD_STRIKES)
+        blocked = strikes >= MAX_GUARD_STRIKES
+        db.execute("UPDATE users SET guard_strikes=?, guard_blocked=? WHERE id=?", (strikes, int(blocked), user_id))
+        db.commit()
+    detail = f"This question should be medically relevant. Strike {strikes} of {MAX_GUARD_STRIKES}."
+    if blocked:
+        detail += " Your question access is now blocked after five rejected questions."
+    elif strikes == MAX_GUARD_STRIKES - 1:
+        detail += " Warning: one more rejected question will block access."
+    raise HTTPException(
+        403 if blocked else 400,
+        detail,
+        headers={"X-MedAtlas-Guard-Strikes": str(strikes), "X-MedAtlas-Guard-Blocked": str(blocked).lower()},
+    )
 
 
 @app.on_event("startup")
@@ -201,9 +229,17 @@ def document_file(request: Request, document_id: str):
 
 
 def _grounded_answer(query, user_id=None):
+    if user_id:
+        strikes, blocked = _guard_state(user_id)
+        if blocked:
+            raise HTTPException(
+                403,
+                f"Question access is blocked after {MAX_GUARD_STRIKES} rejected questions.",
+                headers={"X-MedAtlas-Guard-Strikes": str(strikes), "X-MedAtlas-Guard-Blocked": "true"},
+            )
     try:
         if not guard([{"role": "user", "content": query}]):
-            raise HTTPException(400, "The request was blocked by the safety model.")
+            _reject_guarded_question(user_id)
     except RuntimeError as error:
         raise HTTPException(503, str(error)) from error
 

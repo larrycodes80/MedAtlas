@@ -25,9 +25,9 @@ MEDICAL_CATEGORIES = {
 }
 MEDICAL_EVIDENCE = re.compile(
     r"\b(?:patient|physician|doctor|clinical|discharge|diagnosis|symptom|fever|cough|"
-    r"blood|hemoglobin|platelet|glucose|cbc|urinalysis|biopsy|pathology|culture|specimen|"
-    r"radiology|x-ray|mri|ct|ultrasound|dexa|impression|"
-    r"prescription|medication|pharmacy|dosage|dose|mg|iu|bid|prn|therapy|"
+    r"laboratory|lab report|blood|hemoglobin|platelet|glucose|cbc|urinalysis|biopsy|pathology|culture|specimen|"
+    r"radiology|x-ray|mri|ct|ultrasound|dexa|imaging report|impression|consultation|clinical note|discharge summary|"
+    r"prescription|medication|medication reconciliation|pharmacy|dosage|dose|mg|iu|bid|prn|therapy|"
     r"blood pressure|heart rate|cgm|"
     r"health insurance|healthcare|hospital|hipaa|icd-?10|cpt|medical records|health information)\b",
     re.IGNORECASE,

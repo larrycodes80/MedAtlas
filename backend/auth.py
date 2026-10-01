@@ -97,11 +97,19 @@ def init_auth():
                     birthday TEXT NOT NULL,
                     mobile TEXT NOT NULL,
                     password_hash TEXT,
+                    guard_strikes INTEGER NOT NULL DEFAULT 0,
+                    guard_blocked INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
         elif "password_hash" not in columns:
             db.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
+        columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+        if "guard_strikes" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN guard_strikes INTEGER NOT NULL DEFAULT 0")
+        if "guard_blocked" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN guard_blocked INTEGER NOT NULL DEFAULT 0")
 
         session_columns = {row[1] for row in db.execute("PRAGMA table_info(auth_sessions)")}
         if session_columns and "user_id" not in session_columns:
@@ -128,7 +136,13 @@ def init_auth():
 def status(request: Request):
     with get_connection() as db:
         accounts = db.execute("SELECT COUNT(*) FROM users WHERE password_hash IS NOT NULL").fetchone()[0]
-    return {"accounts": accounts, "profile": current_profile(request)}
+        profile = current_profile(request)
+        guard = {"strikes": 0, "blocked": False}
+        if profile:
+            row = db.execute("SELECT guard_strikes, guard_blocked FROM users WHERE id=?", (profile["userId"],)).fetchone()
+            if row:
+                guard = {"strikes": int(row["guard_strikes"]), "blocked": bool(row["guard_blocked"])}
+    return {"accounts": accounts, "profile": profile, "guard": guard}
 
 
 @router.post("/create")
